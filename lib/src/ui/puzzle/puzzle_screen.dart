@@ -21,8 +21,8 @@ import 'package:lichess_mobile/src/model/puzzle/puzzle_preferences.dart';
 import 'package:lichess_mobile/src/model/puzzle/puzzle_providers.dart';
 import 'package:lichess_mobile/src/model/puzzle/puzzle_service.dart';
 import 'package:lichess_mobile/src/model/puzzle/puzzle_theme.dart';
-import 'package:lichess_mobile/src/model/settings/board_preferences.dart';
 import 'package:lichess_mobile/src/model/engine/engine_evaluation.dart';
+import 'package:lichess_mobile/src/utils/immersive_mode.dart';
 import 'package:lichess_mobile/src/utils/l10n_context.dart';
 import 'package:lichess_mobile/src/utils/chessground_compat.dart';
 import 'package:lichess_mobile/src/ui/engine/engine_gauge.dart';
@@ -129,7 +129,7 @@ class _LoadPuzzle extends ConsumerWidget {
   }
 }
 
-class _Body extends ConsumerWidget {
+class _Body extends ConsumerStatefulWidget {
   const _Body({
     required this.initialPuzzleContext,
   });
@@ -137,10 +137,13 @@ class _Body extends ConsumerWidget {
   final PuzzleContext initialPuzzleContext;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final pieceSet =
-        ref.watch(boardPreferencesProvider.select((p) => p.pieceSet));
-    final ctrlProvider = puzzleCtrlProvider(initialPuzzleContext);
+  ConsumerState<_Body> createState() => _BodyState();
+}
+
+class _BodyState extends ConsumerState<_Body> with AndroidImmersiveMode {
+  @override
+  Widget build(BuildContext context) {
+    final ctrlProvider = puzzleCtrlProvider(widget.initialPuzzleContext);
     final puzzleState = ref.watch(ctrlProvider);
 
     final currentEvalBest = ref.watch(
@@ -197,7 +200,6 @@ class _Body extends ConsumerWidget {
                           child: PuzzleFeedbackWidget(
                             puzzle: puzzleState.puzzle,
                             state: puzzleState,
-                            pieceSet: pieceSet,
                             onStreak: false,
                           ),
                         ),
@@ -246,7 +248,7 @@ class _Body extends ConsumerWidget {
                         ),
                       ),
                     PuzzleSessionWidget(
-                      initialPuzzleContext: initialPuzzleContext,
+                      initialPuzzleContext: widget.initialPuzzleContext,
                       ctrlProvider: ctrlProvider,
                     ),
                   ],
@@ -256,7 +258,7 @@ class _Body extends ConsumerWidget {
           ),
         ),
         _BottomBar(
-          initialPuzzleContext: initialPuzzleContext,
+          initialPuzzleContext: widget.initialPuzzleContext,
           ctrlProvider: ctrlProvider,
         ),
       ],
@@ -272,6 +274,12 @@ class _BottomBar extends ConsumerWidget {
 
   final PuzzleContext initialPuzzleContext;
   final PuzzleCtrlProvider ctrlProvider;
+
+  static const _repeatTriggerDelays = [
+    Duration(milliseconds: 500),
+    Duration(milliseconds: 250),
+    Duration(milliseconds: 100),
+  ];
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -329,22 +337,30 @@ class _BottomBar extends ConsumerWidget {
                     : () => ref.read(ctrlProvider.notifier).viewSolution(),
               ),
             if (puzzleState.mode == PuzzleMode.view)
-              BottomBarButton(
-                onTap: puzzleState.canGoBack
-                    ? () => ref.read(ctrlProvider.notifier).userPrevious()
-                    : null,
-                label: 'Previous',
-                shortLabel: 'Previous',
-                icon: CupertinoIcons.chevron_back,
+              RepeatButton(
+                triggerDelays: _repeatTriggerDelays,
+                onLongPress:
+                    puzzleState.canGoBack ? () => _moveBackward(ref) : null,
+                child: BottomBarButton(
+                  onTap:
+                      puzzleState.canGoBack ? () => _moveBackward(ref) : null,
+                  label: 'Previous',
+                  shortLabel: 'Previous',
+                  icon: CupertinoIcons.chevron_back,
+                ),
               ),
             if (puzzleState.mode == PuzzleMode.view)
-              BottomBarButton(
-                onTap: puzzleState.canGoNext
-                    ? () => ref.read(ctrlProvider.notifier).userNext()
+              RepeatButton(
+                triggerDelays: _repeatTriggerDelays,
+                onLongPress: puzzleState.canGoNext
+                    ? () => _moveForward(ref, hapticFeedback: false)
                     : null,
-                label: context.l10n.next,
-                shortLabel: context.l10n.next,
-                icon: CupertinoIcons.chevron_forward,
+                child: BottomBarButton(
+                  onTap: puzzleState.canGoNext ? () => _moveForward(ref) : null,
+                  label: context.l10n.next,
+                  shortLabel: context.l10n.next,
+                  icon: CupertinoIcons.chevron_forward,
+                ),
               ),
             if (puzzleState.mode == PuzzleMode.view)
               BottomBarButton(
@@ -363,6 +379,14 @@ class _BottomBar extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  void _moveForward(WidgetRef ref, {bool hapticFeedback = true}) {
+    ref.read(ctrlProvider.notifier).userNext(hapticFeedback: hapticFeedback);
+  }
+
+  void _moveBackward(WidgetRef ref) {
+    ref.read(ctrlProvider.notifier).userPrevious();
   }
 }
 

@@ -10,6 +10,7 @@ import 'package:freezed_annotation/freezed_annotation.dart';
 
 import 'package:lichess_mobile/src/model/common/service/move_feedback.dart';
 import 'package:lichess_mobile/src/model/common/service/sound_service.dart';
+import 'package:lichess_mobile/src/model/auth/auth_controller.dart';
 
 import 'puzzle.dart';
 import 'puzzle_repository.dart';
@@ -27,7 +28,7 @@ class StormCtrl extends _$StormCtrl {
   int _nextPuzzleIndex = 0;
   int _moves = 0;
   int _errors = 0;
-  final _history = <(LitePuzzle, bool, Duration)>[];
+  final _history = <PuzzleHistoryEntry>[];
   Timer? _firstMoveTimer;
 
   @override
@@ -84,7 +85,7 @@ class StormCtrl extends _$StormCtrl {
           state.clock.sendEnd();
           return;
         }
-        ref.read(soundServiceProvider).play(Sound.puzzleStormGood);
+        ref.read(soundServiceProvider).play(Sound.confirmation);
         _pushToHistory(success: true);
         await _loadNextPuzzle(true, ComboState.increase);
         return;
@@ -99,7 +100,7 @@ class StormCtrl extends _$StormCtrl {
       );
     } else {
       _errors += 1;
-      ref.read(soundServiceProvider).play(Sound.puzzleStormBad);
+      ref.read(soundServiceProvider).play(Sound.error);
       HapticFeedback.heavyImpact();
       state.clock.subtractTime(malus);
       if (state.clock.flag() || !_isNextPuzzleAvailable()) {
@@ -119,28 +120,36 @@ class StormCtrl extends _$StormCtrl {
 
     final stats = _getStats();
 
-    final res = await ref
-        .read(puzzleRepositoryProvider)
-        .postStormRun(stats)
-        .timeout(const Duration(seconds: 2));
+    final session = ref.read(authSessionProvider);
+    if (session != null) {
+      final res = await ref
+          .read(puzzleRepositoryProvider)
+          .postStormRun(stats)
+          .timeout(const Duration(seconds: 2));
 
-    final newState = state.copyWith(
-      stats: stats,
-      runOver: true,
-    );
+      final newState = state.copyWith(
+        stats: stats,
+        runOver: true,
+      );
 
-    res.match(
-      onSuccess: (newHigh) {
-        if (newHigh != null) {
-          state = newState.copyWith(stats: stats.copyWith(newHigh: newHigh));
-        } else {
+      res.match(
+        onSuccess: (newHigh) {
+          if (newHigh != null) {
+            state = newState.copyWith(stats: stats.copyWith(newHigh: newHigh));
+          } else {
+            state = newState;
+          }
+        },
+        onError: (_, __) {
           state = newState;
-        }
-      },
-      onError: (_, __) {
-        state = newState;
-      },
-    );
+        },
+      );
+    } else {
+      state = state.copyWith(
+        stats: stats,
+        runOver: true,
+      );
+    }
   }
 
   Future<void> _loadNextPuzzle(bool result, ComboState comboChange) async {
@@ -215,20 +224,27 @@ class StormCtrl extends _$StormCtrl {
   }
 
   StormRunStats _getStats() {
-    final wins = _history.where((e) => e.$2 == true).toList();
+    final wins = _history.where((e) => e.win == true).toList();
+    final mean =
+        _history.sumBy((e) => e.solvingTime!.inSeconds) / _history.length;
+    final threshold = mean * 1.5;
     return StormRunStats(
       moves: _moves,
       errors: _errors,
       score: wins.length,
       comboBest: state.combo.best,
       time: state.clock.endAt!,
-      timePerMove: _history.sumBy((e) => e.$3.inSeconds) / _history.length,
+      timePerMove: mean,
       highest: wins.isNotEmpty
-          ? wins.map((e) => e.$1.rating).reduce(
+          ? wins.map((e) => e.rating).reduce(
                 (maxRating, rating) => rating > maxRating ? rating : maxRating,
               )
           : 0,
       history: _history.toIList(),
+      slowPuzzleIds: _history
+          .where((e) => e.solvingTime!.inSeconds > threshold)
+          .map((e) => e.id)
+          .toIList(),
     );
   }
 
@@ -236,7 +252,9 @@ class StormCtrl extends _$StormCtrl {
     final timeTaken = state.lastSolvedTime != null
         ? DateTime.now().difference(state.lastSolvedTime!)
         : DateTime.now().difference(state.clock.startAt!);
-    _history.add((state.puzzle, success, timeTaken));
+    _history.add(
+      PuzzleHistoryEntry.fromLitePuzzle(state.puzzle, success, timeTaken),
+    );
   }
 
   bool _isNextPuzzleAvailable() {

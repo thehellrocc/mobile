@@ -17,8 +17,6 @@ enum Sound {
   error,
   confirmation,
   puzzleStormEnd,
-  puzzleStormGood,
-  puzzleStormBad
 }
 
 typedef SoundMap = IMap<Sound, int>;
@@ -72,10 +70,19 @@ class SoundService {
   SoundMap _sounds;
   final SoundServiceRef _ref;
 
-  void play(Sound sound) {
+  int? _currentStreamId;
+
+  Future<int?> play(Sound sound) async {
     final isEnabled = _ref.read(generalPreferencesProvider).isSoundEnabled;
     final soundId = _sounds[sound];
-    if (soundId != null && isEnabled) _pool.play(soundId);
+    if (soundId != null && isEnabled) {
+      return _currentStreamId = await _pool.play(soundId);
+    }
+    return null;
+  }
+
+  Future<void> stopCurrent() async {
+    if (_currentStreamId != null) return _pool.stop(_currentStreamId!);
   }
 
   Future<void> changeTheme(SoundTheme theme, {bool playSound = false}) async {

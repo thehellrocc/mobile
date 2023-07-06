@@ -12,6 +12,7 @@ import 'package:lichess_mobile/src/model/settings/brightness.dart';
 import 'package:lichess_mobile/src/model/settings/general_preferences.dart';
 import 'package:lichess_mobile/src/model/settings/board_preferences.dart';
 import 'package:lichess_mobile/src/widgets/bottom_navigation.dart';
+import 'package:lichess_mobile/src/utils/immersive_mode.dart';
 
 class LoadApp extends ConsumerWidget {
   const LoadApp({super.key});
@@ -71,7 +72,7 @@ class _AppState extends ConsumerState<App> {
       onGenerateTitle: (BuildContext context) => 'lichess.org',
       theme: ThemeData(
         navigationBarTheme: NavigationBarTheme.of(context).copyWith(
-          height: screenHeight < 700 ? 60 : null,
+          height: screenHeight < kSmallHeightScreenThreshold ? 60 : null,
         ),
         textTheme: defaultTargetPlatform == TargetPlatform.iOS
             ? brightness == Brightness.light
@@ -103,6 +104,9 @@ class _AppState extends ConsumerState<App> {
         );
       },
       home: const BottomNavScaffold(),
+      navigatorObservers: [
+        immersiveModeRouteObserver,
+      ],
     );
   }
 

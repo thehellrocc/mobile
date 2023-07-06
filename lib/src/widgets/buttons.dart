@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -156,11 +158,17 @@ class CupertinoIconButton extends StatelessWidget {
     required this.onPressed,
     required this.semanticsLabel,
     required this.icon,
+    this.padding,
     super.key,
   });
   final VoidCallback? onPressed;
   final Widget icon;
   final String semanticsLabel;
+
+  /// The amount of space to surround the child inside the bounds of the button.
+  ///
+  /// Defaults to 16.0 pixels.
+  final EdgeInsetsGeometry? padding;
 
   @override
   Widget build(BuildContext context) {
@@ -171,7 +179,7 @@ class CupertinoIconButton extends StatelessWidget {
       label: semanticsLabel,
       excludeSemantics: true,
       child: CupertinoButton(
-        padding: EdgeInsets.zero,
+        padding: padding,
         onPressed: onPressed,
         child: icon,
       ),
@@ -184,12 +192,21 @@ class BottomBarIconButton extends StatelessWidget {
     required this.icon,
     required this.onPressed,
     required this.semanticsLabel,
+    this.padding,
+    this.showTooltip = true,
     super.key,
   });
 
   final Widget icon;
   final VoidCallback? onPressed;
   final String semanticsLabel;
+  final bool showTooltip;
+
+  /// The padding around the button's icon. The entire padded icon will react
+  /// to input gestures.
+  ///
+  /// If null, it defaults to 8.0 padding on all sides on Android and 16.0 on iOS.
+  final EdgeInsetsGeometry? padding;
 
   @override
   Widget build(BuildContext context) {
@@ -210,7 +227,8 @@ class BottomBarIconButton extends StatelessWidget {
         return Theme(
           data: Theme.of(context),
           child: IconButton(
-            tooltip: semanticsLabel,
+            tooltip: showTooltip ? semanticsLabel : null,
+            padding: padding,
             onPressed: onPressed,
             icon: icon,
           ),
@@ -397,6 +415,143 @@ class _CardButtonState extends State<CardButton> {
         );
       default:
         assert(false, 'Unexpected platform $defaultTargetPlatform');
+        return const SizedBox.shrink();
+    }
+  }
+}
+
+/// Button to repeatedly call a funtion, triggered after a long press.
+///
+/// This widget is just a wrapper, the visuals are delegated to the child widget.
+///
+/// ### Notes
+/// Child widgets with a `tooltip` already have an `onLongPress` callback that will
+/// conflict.
+/// `onTap` callback should be handled by the child widget.
+class RepeatButton extends StatefulWidget {
+  const RepeatButton({
+    required this.onLongPress,
+    required this.child,
+    this.triggerDelays = const [
+      Duration(milliseconds: 600),
+      Duration(milliseconds: 400),
+      Duration(milliseconds: 250),
+      Duration(milliseconds: 200),
+      Duration(milliseconds: 150),
+      Duration(milliseconds: 100),
+      Duration(milliseconds: 80),
+    ],
+    this.holdDelay = const Duration(milliseconds: 50),
+  });
+
+  final Widget child;
+
+  /// function called on long press
+  final VoidCallback? onLongPress;
+
+  /// Delays between callbacks at the beginning. Leave default to get an acceleration effect.
+  /// The maximum length of the list is 3
+  final List<Duration> triggerDelays;
+
+  /// Delay between callbacks
+  final Duration holdDelay;
+
+  @override
+  _RepeatButtonState createState() => _RepeatButtonState();
+}
+
+class _RepeatButtonState extends State<RepeatButton> {
+  bool _isPressed = false;
+  Timer? _timer;
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _onPress() async {
+    _isPressed = true;
+
+    widget.onLongPress?.call();
+    for (final time in widget.triggerDelays) {
+      await Future.delayed(time, () {});
+      if (!_isPressed) return;
+      widget.onLongPress?.call();
+    }
+
+    _timer = Timer.periodic(widget.holdDelay, (_) {
+      if (_isPressed) {
+        widget.onLongPress?.call();
+      }
+    });
+  }
+
+  void _onPressEnd() {
+    _isPressed = false;
+    _timer?.cancel();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onLongPress: _onPress,
+      onLongPressCancel: _onPressEnd,
+      onLongPressUp: _onPressEnd,
+      child: widget.child,
+    );
+  }
+}
+
+/// Platform agnostic icon button
+///
+/// Optionally provide a bool to highlight the button
+/// Will use [IconButton] on Android and [CupertinoIconButton] on iOS.
+class PlatformIconButton extends StatelessWidget {
+  const PlatformIconButton({
+    required this.icon,
+    required this.semanticsLabel,
+    required this.onTap,
+    this.highlighted = true,
+  });
+
+  final IconData icon;
+  final String semanticsLabel;
+  final VoidCallback? onTap;
+  final bool highlighted;
+
+  @override
+  Widget build(BuildContext context) {
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+        final themeData = Theme.of(context);
+        return Theme(
+          data: themeData,
+          child: IconButton(
+            onPressed: onTap,
+            icon: Icon(icon),
+            tooltip: semanticsLabel,
+            color: highlighted ? themeData.colorScheme.primary : null,
+          ),
+        );
+      case TargetPlatform.iOS:
+        final themeData = CupertinoTheme.of(context);
+        return CupertinoTheme(
+          data: themeData.copyWith(
+            primaryColor: themeData.textTheme.textStyle.color,
+          ),
+          child: CupertinoIconButton(
+            onPressed: onTap,
+            semanticsLabel: semanticsLabel,
+            icon: Icon(
+              icon,
+              color: highlighted ? themeData.primaryColor : null,
+            ),
+          ),
+        );
+      default:
+        assert(false, 'Unexpected Platform $defaultTargetPlatform');
         return const SizedBox.shrink();
     }
   }

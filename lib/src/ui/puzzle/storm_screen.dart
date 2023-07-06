@@ -4,14 +4,10 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:lichess_mobile/src/model/auth/auth_controller.dart';
-import 'package:lichess_mobile/src/model/puzzle/puzzle.dart';
-import 'package:lichess_mobile/src/model/puzzle/puzzle_service.dart';
-import 'package:lichess_mobile/src/model/puzzle/puzzle_theme.dart';
 import 'package:lichess_mobile/src/model/settings/brightness.dart';
-import 'package:lichess_mobile/src/ui/puzzle/puzzle_screen.dart';
 import 'package:lichess_mobile/src/ui/puzzle/storm_clock.dart';
+import 'package:lichess_mobile/src/ui/puzzle/storm_dashboard.dart';
 import 'package:lichess_mobile/src/utils/navigation.dart';
-import 'package:flutter_layout_grid/flutter_layout_grid.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:chessground/chessground.dart' as cg;
 import 'package:dartchess/dartchess.dart';
@@ -27,14 +23,16 @@ import 'package:lichess_mobile/src/styles/lichess_icons.dart';
 import 'package:lichess_mobile/src/styles/styles.dart';
 import 'package:lichess_mobile/src/widgets/platform.dart';
 import 'package:lichess_mobile/src/widgets/adaptive_dialog.dart';
-import 'package:lichess_mobile/src/widgets/board_thumbnail.dart';
 import 'package:lichess_mobile/src/widgets/buttons.dart';
 import 'package:lichess_mobile/src/widgets/feedback.dart';
 import 'package:lichess_mobile/src/widgets/table_board_layout.dart';
 import 'package:lichess_mobile/src/widgets/list.dart';
 import 'package:lichess_mobile/src/utils/chessground_compat.dart';
 import "package:lichess_mobile/src/utils/l10n_context.dart";
+import "package:lichess_mobile/src/utils/immersive_mode.dart";
 import 'package:lichess_mobile/src/ui/settings/toggle_sound_button.dart';
+
+import 'history_boards.dart';
 
 class StormScreen extends StatelessWidget {
   const StormScreen({super.key});
@@ -50,7 +48,7 @@ class StormScreen extends StatelessWidget {
   Widget _androidBuilder(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        actions: [ToggleSoundButton()],
+        actions: [_StormDashboardButton(), ToggleSoundButton()],
         title: const Text('Puzzle Storm'),
       ),
       body: const _Load(),
@@ -61,7 +59,11 @@ class StormScreen extends StatelessWidget {
     return CupertinoPageScaffold(
       navigationBar: CupertinoNavigationBar(
         middle: const Text('Puzzle Storm'),
-        trailing: ToggleSoundButton(),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [_StormDashboardButton(), ToggleSoundButton()],
+        ),
       ),
       child: const _Load(),
     );
@@ -80,7 +82,7 @@ class _Load extends ConsumerWidget {
       loading: () => const CenterLoadingIndicator(),
       error: (e, s) {
         debugPrint(
-          'SEVERE: [PuzzleStreakScreen] could not load streak; $e\n$s',
+          'SEVERE: [PuzzleStormScreen] could not load streak; $e\n$s',
         );
         return Center(
           child: TableBoardLayout(
@@ -99,18 +101,25 @@ class _Load extends ConsumerWidget {
   }
 }
 
-class _Body extends ConsumerWidget {
+class _Body extends ConsumerStatefulWidget {
   const _Body({required this.data});
   final PuzzleStormResponse data;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final ctrlProvider = stormCtrlProvider(data.puzzles);
+  ConsumerState<_Body> createState() => _BodyState();
+}
+
+class _BodyState extends ConsumerState<_Body> with AndroidImmersiveMode {
+  @override
+  Widget build(BuildContext context) {
+    final ctrlProvider = stormCtrlProvider(widget.data.puzzles);
     final puzzleState = ref.watch(ctrlProvider);
 
     ref.listen(ctrlProvider.select((state) => state.runOver), (_, s) {
       if (s) {
-        _showStats(context, ref.read(ctrlProvider).stats!);
+        Future.delayed(const Duration(milliseconds: 200), () {
+          _showStats(context, ref.read(ctrlProvider).stats!);
+        });
       }
     });
 
@@ -614,7 +623,15 @@ class _RunStats extends StatelessWidget {
   Widget build(BuildContext context) {
     return defaultTargetPlatform == TargetPlatform.iOS
         ? CupertinoPageScaffold(
-            navigationBar: const CupertinoNavigationBar(),
+            navigationBar: CupertinoNavigationBar(
+              leading: CupertinoButton(
+                padding: EdgeInsets.zero,
+                onPressed: () {
+                  Navigator.of(context).pop();
+                },
+                child: Text(context.l10n.close),
+              ),
+            ),
             child: _RunStatsPopup(stats),
           )
         : Scaffold(
@@ -629,27 +646,21 @@ class _RunStats extends StatelessWidget {
   }
 }
 
-class _RunStatsPopup extends ConsumerWidget {
+class _RunStatsPopup extends ConsumerStatefulWidget {
   const _RunStatsPopup(this.stats);
 
   final StormRunStats stats;
 
-  String newHighTitle(BuildContext context, StormNewHigh newHigh) {
-    switch (newHigh.key) {
-      case StormNewHighType.day:
-        return context.l10n.stormNewDailyHighscore;
-      case StormNewHighType.week:
-        return context.l10n.stormNewWeeklyHighscore;
-      case StormNewHighType.month:
-        return context.l10n.stormNewMonthlyHighscore;
-      case StormNewHighType.allTime:
-        return context.l10n.stormNewAllTimeHighscore;
-    }
-  }
-
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final highScoreWidgets = stats.newHigh != null
+  ConsumerState<_RunStatsPopup> createState() => _RunStatsPopupState();
+}
+
+class _RunStatsPopupState extends ConsumerState<_RunStatsPopup> {
+  StormFilter filter = const StormFilter(slow: false, failed: false);
+  @override
+  Widget build(BuildContext context) {
+    final puzzleList = widget.stats.historyFilter(filter);
+    final highScoreWidgets = widget.stats.newHigh != null
         ? [
             const SizedBox(height: 16),
             ListTile(
@@ -659,14 +670,14 @@ class _RunStatsPopup extends ConsumerWidget {
                 color: LichessColors.brag,
               ),
               title: Text(
-                newHighTitle(context, stats.newHigh!),
+                newHighTitle(context, widget.stats.newHigh!),
                 style: Styles.sectionTitle.copyWith(
                   color: LichessColors.brag,
                 ),
               ),
               subtitle: Text(
                 context.l10n.stormPreviousHighscoreWasX(
-                  stats.newHigh!.prev.toString(),
+                  widget.stats.newHigh!.prev.toString(),
                 ),
                 style: const TextStyle(
                   color: LichessColors.brag,
@@ -684,32 +695,32 @@ class _RunStatsPopup extends ConsumerWidget {
           ListSection(
             cupertinoAdditionalDividerMargin: 6,
             header: Text(
-              '${stats.score} ${context.l10n.stormPuzzlesSolved}',
+              '${widget.stats.score} ${context.l10n.stormPuzzlesSolved}',
             ),
             children: [
               _StatsRow(
                 context.l10n.stormMoves,
-                stats.moves.toString(),
+                widget.stats.moves.toString(),
               ),
               _StatsRow(
                 context.l10n.accuracy,
-                '${(((stats.moves - stats.errors) / stats.moves) * 100).toStringAsFixed(2)}%',
+                '${(((widget.stats.moves - widget.stats.errors) / widget.stats.moves) * 100).toStringAsFixed(2)}%',
               ),
               _StatsRow(
                 context.l10n.stormCombo,
-                stats.comboBest.toString(),
+                widget.stats.comboBest.toString(),
               ),
               _StatsRow(
                 context.l10n.stormTime,
-                '${stats.time.inSeconds}s',
+                '${widget.stats.time.inSeconds}s',
               ),
               _StatsRow(
                 context.l10n.stormTimePerMove,
-                '${stats.timePerMove.toStringAsFixed(1)}s',
+                '${widget.stats.timePerMove.toStringAsFixed(1)}s',
               ),
               _StatsRow(
                 context.l10n.stormHighestSolved,
-                stats.highest.toString(),
+                widget.stats.highest.toString(),
               ),
             ],
           ),
@@ -731,133 +742,70 @@ class _RunStatsPopup extends ConsumerWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  context.l10n.stormPuzzlesPlayed,
-                  style: Styles.sectionTitle,
+                Row(
+                  children: [
+                    Text(
+                      context.l10n.stormPuzzlesPlayed,
+                      style: Styles.sectionTitle,
+                    ),
+                    const Spacer(),
+                    Tooltip(
+                      excludeFromSemantics: true,
+                      message: context.l10n.stormFailedPuzzles,
+                      child: PlatformIconButton(
+                        semanticsLabel: context.l10n.stormFailedPuzzles,
+                        icon: defaultTargetPlatform == TargetPlatform.iOS
+                            ? CupertinoIcons.clear_fill
+                            : Icons.close,
+                        onTap: () => setState(
+                          () =>
+                              filter = filter.copyWith(failed: !filter.failed),
+                        ),
+                        highlighted: filter.failed,
+                      ),
+                    ),
+                    Tooltip(
+                      message: context.l10n.stormSlowPuzzles,
+                      excludeFromSemantics: true,
+                      child: PlatformIconButton(
+                        semanticsLabel: context.l10n.stormSlowPuzzles,
+                        icon: defaultTargetPlatform == TargetPlatform.iOS
+                            ? CupertinoIcons.hourglass
+                            : Icons.hourglass_bottom,
+                        onTap: () => setState(
+                          () => filter = filter.copyWith(slow: !filter.slow),
+                        ),
+                        highlighted: filter.slow,
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 3.0),
-                _PuzzleHistory(stats),
+                if (puzzleList.isNotEmpty)
+                  PuzzleHistoryBoards(puzzleList)
+                else
+                  const Center(
+                    child: Text('Nothing to show, go change the filters'),
+                  ),
               ],
             ),
-          ),
+          )
         ],
       ),
     );
   }
-}
 
-class _PuzzleHistory extends ConsumerStatefulWidget {
-  const _PuzzleHistory(this.stats);
-
-  final StormRunStats stats;
-
-  @override
-  ConsumerState createState() => _PuzzleHistoryState();
-}
-
-class _PuzzleHistoryState extends ConsumerState<_PuzzleHistory> {
-  bool isLoading = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constrains) {
-        final crossAxisCount = constrains.maxWidth > kTabletThreshold ? 4 : 2;
-        const columnGap = 12.0;
-        final boardWidth = (constrains.maxWidth / crossAxisCount) -
-            (columnGap / crossAxisCount);
-        return LayoutGrid(
-          columnSizes: List.generate(crossAxisCount, (_) => 1.fr),
-          rowSizes: List.generate(
-            (widget.stats.history.length / crossAxisCount).ceil(),
-            (_) => auto,
-          ),
-          rowGap: 16.0,
-          columnGap: columnGap,
-          children: widget.stats.history.map((e) {
-            final (side, fen, lastMove) = e.$1.preview;
-            return BoardThumbnail(
-              size: boardWidth,
-              onTap: isLoading
-                  ? null
-                  : () async {
-                      final session = ref.read(authSessionProvider);
-                      Puzzle? puzzle;
-                      try {
-                        setState(() => isLoading = true);
-                        puzzle = await ref.read(puzzleProvider(e.$1.id).future);
-                      } catch (e) {
-                        showPlatformSnackbar(
-                          context,
-                          e.toString(),
-                        );
-                      } finally {
-                        if (mounted && puzzle != null) {
-                          setState(() => isLoading = false);
-                          pushPlatformRoute(
-                            context,
-                            builder: (_) => PuzzleScreen(
-                              theme: PuzzleTheme.mix,
-                              initialPuzzleContext: PuzzleContext(
-                                theme: PuzzleTheme.mix,
-                                puzzle: puzzle!,
-                                userId: session?.user.id,
-                              ),
-                            ),
-                          );
-                        }
-                      }
-                    },
-              orientation: side.cg,
-              fen: fen,
-              lastMove: lastMove.cg,
-              footer: Padding(
-                padding: const EdgeInsets.only(top: 4.0),
-                child: Row(
-                  mainAxisSize: MainAxisSize.max,
-                  children: [
-                    ColoredBox(
-                      color: e.$2 ? LichessColors.good : LichessColors.red,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          vertical: 1,
-                          horizontal: 3,
-                        ),
-                        child: Row(
-                          children: [
-                            if (e.$2)
-                              const Icon(
-                                color: Colors.white,
-                                Icons.done,
-                                size: 20,
-                              )
-                            else
-                              const Icon(
-                                Icons.close,
-                                color: Colors.white,
-                                size: 20,
-                              ),
-                            Text(
-                              '${e.$3.inSeconds}s',
-                              overflow: TextOverflow.fade,
-                              style: const TextStyle(
-                                color: Colors.white,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(e.$1.rating.toString()),
-                  ],
-                ),
-              ),
-            );
-          }).toList(),
-        );
-      },
-    );
+  String newHighTitle(BuildContext context, StormNewHigh newHigh) {
+    switch (newHigh.key) {
+      case StormNewHighType.day:
+        return context.l10n.stormNewDailyHighscore;
+      case StormNewHighType.week:
+        return context.l10n.stormNewWeeklyHighscore;
+      case StormNewHighType.month:
+        return context.l10n.stormNewMonthlyHighscore;
+      case StormNewHighType.allTime:
+        return context.l10n.stormNewAllTimeHighscore;
+    }
   }
 }
 
@@ -880,4 +828,39 @@ class _StatsRow extends StatelessWidget {
       ),
     );
   }
+}
+
+class _StormDashboardButton extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final session = ref.watch(authSessionProvider);
+    if (session != null) {
+      switch (defaultTargetPlatform) {
+        case TargetPlatform.iOS:
+          return CupertinoIconButton(
+            padding: EdgeInsets.zero,
+            onPressed: () => _showDashboard(context),
+            semanticsLabel: 'Storm History',
+            icon: const Icon(Icons.history),
+          );
+        case TargetPlatform.android:
+          return IconButton(
+            tooltip: 'Storm History',
+            onPressed: () => _showDashboard(context),
+            icon: const Icon(Icons.history),
+          );
+        default:
+          assert(false, 'Unexpected platform $defaultTargetPlatform');
+          return const SizedBox.shrink();
+      }
+    }
+    return const SizedBox.shrink();
+  }
+
+  void _showDashboard(BuildContext context) => pushPlatformRoute(
+        context,
+        rootNavigator: true,
+        fullscreenDialog: true,
+        builder: (_) => StormDashboardModal(),
+      );
 }

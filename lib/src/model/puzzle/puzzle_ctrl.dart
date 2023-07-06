@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/services.dart';
 import 'package:async/async.dart';
 import 'package:result_extensions/result_extensions.dart';
 import 'package:collection/collection.dart';
@@ -21,7 +22,8 @@ import 'package:lichess_mobile/src/model/puzzle/puzzle_preferences.dart';
 import 'package:lichess_mobile/src/model/puzzle/puzzle_session.dart';
 import 'package:lichess_mobile/src/model/puzzle/puzzle_difficulty.dart';
 import 'package:lichess_mobile/src/model/engine/engine_evaluation.dart';
-import 'package:lichess_mobile/src/utils/debounce.dart';
+import 'package:lichess_mobile/src/model/engine/work.dart';
+import 'package:lichess_mobile/src/utils/rate_limit.dart';
 
 part 'puzzle_ctrl.g.dart';
 part 'puzzle_ctrl.freezed.dart';
@@ -36,6 +38,8 @@ class PuzzleCtrl extends _$PuzzleCtrl {
   // completes the current one
   FutureResult<PuzzleContext?>? _nextPuzzleFuture;
 
+  final _engineEvalDebounce = Debouncer(const Duration(milliseconds: 100));
+
   @override
   PuzzleCtrlState build(
     PuzzleContext initialContext, {
@@ -44,6 +48,7 @@ class PuzzleCtrl extends _$PuzzleCtrl {
     ref.onDispose(() {
       _firstMoveTimer?.cancel();
       _viewSolutionTimer?.cancel();
+      _engineEvalDebounce.dispose();
     });
 
     return _loadNewContext(initialContext, initialStreak);
@@ -129,14 +134,15 @@ class PuzzleCtrl extends _$PuzzleCtrl {
     }
   }
 
-  void userNext() {
+  void userNext({bool hapticFeedback = true}) {
     _viewSolutionTimer?.cancel();
-    _goToNextNode();
+    _goToNextNode(replaying: true);
+    if (hapticFeedback) HapticFeedback.lightImpact();
   }
 
   void userPrevious() {
     _viewSolutionTimer?.cancel();
-    _goToPreviousNode();
+    _goToPreviousNode(replaying: true);
   }
 
   void viewSolution() {
@@ -204,7 +210,10 @@ class PuzzleCtrl extends _$PuzzleCtrl {
   void sendStreakResult() {
     if (initialContext.userId != null) {
       final repo = ref.read(puzzleRepositoryProvider);
-      repo.postStreakRun(state.streak?.index ?? 0);
+      final streak = state.streak?.index;
+      if (streak != null && streak > 0) {
+        repo.postStreakRun(streak);
+      }
     }
   }
 
@@ -256,13 +265,16 @@ class PuzzleCtrl extends _$PuzzleCtrl {
         : Future.value(Result.value(null));
   }
 
-  void _goToNextNode() {
+  void _goToNextNode({bool replaying = false}) {
     if (state.node.children.isEmpty) return;
-    _setPath(state.currentPath + state.node.children.first.id);
+    _setPath(
+      state.currentPath + state.node.children.first.id,
+      replaying: replaying,
+    );
   }
 
-  void _goToPreviousNode() {
-    _setPath(state.currentPath.penultimate);
+  void _goToPreviousNode({bool replaying = false}) {
+    _setPath(state.currentPath.penultimate, replaying: replaying);
   }
 
   Future<void> _completePuzzle() async {
@@ -292,6 +304,7 @@ class PuzzleCtrl extends _$PuzzleCtrl {
       final next = await service.solve(
         userId: initialContext.userId,
         angle: initialContext.theme,
+        puzzle: state.puzzle,
         solution: PuzzleSolution(
           id: state.puzzle.puzzle.id,
           win: state.result == PuzzleResult.win,
@@ -317,7 +330,7 @@ class PuzzleCtrl extends _$PuzzleCtrl {
     } else {
       // one fail and streak is over
       if (result == PuzzleResult.lose) {
-        soundService.play(Sound.puzzleStormBad);
+        soundService.play(Sound.error);
         await Future<void>.delayed(const Duration(milliseconds: 500));
         _setPath(state.currentPath.penultimate);
         _mergeSolution();
@@ -341,7 +354,7 @@ class PuzzleCtrl extends _$PuzzleCtrl {
               );
               if (nextContext != null) {
                 await Future<void>.delayed(const Duration(milliseconds: 250));
-                soundService.play(Sound.puzzleStormGood);
+                soundService.play(Sound.confirmation);
                 loadPuzzle(nextContext);
               } else {
                 // no more puzzle
@@ -361,17 +374,29 @@ class PuzzleCtrl extends _$PuzzleCtrl {
     }
   }
 
-  void _setPath(UciPath path) {
+  void _setPath(UciPath path, {bool replaying = false}) {
     final pathChange = state.currentPath != path;
     final newNodeList = IList(_gameTree.nodesOn(path));
     final sanMove = newNodeList.last.sanMove;
-    final isForward = path.size > state.currentPath.size;
-    if (isForward) {
-      final isCheck = sanMove.san.contains('+');
+    if (!replaying) {
+      final isForward = path.size > state.currentPath.size;
+      if (isForward) {
+        final isCheck = sanMove.san.contains('+');
+        if (sanMove.san.contains('x')) {
+          ref.read(moveFeedbackServiceProvider).captureFeedback(check: isCheck);
+        } else {
+          ref.read(moveFeedbackServiceProvider).moveFeedback(check: isCheck);
+        }
+      }
+    } else {
+      // when replaying moves fast we don't want haptic feedback
+      final soundService = ref.read(soundServiceProvider);
       if (sanMove.san.contains('x')) {
-        ref.read(moveFeedbackServiceProvider).captureFeedback(check: isCheck);
+        soundService.stopCurrent();
+        soundService.play(Sound.capture);
       } else {
-        ref.read(moveFeedbackServiceProvider).moveFeedback(check: isCheck);
+        soundService.stopCurrent();
+        soundService.play(Sound.move);
       }
     }
     state = state.copyWith(
@@ -399,9 +424,6 @@ class PuzzleCtrl extends _$PuzzleCtrl {
           .stop();
     }
   }
-
-  static final _engineEvalDebounce =
-      Debounce(const Duration(milliseconds: 100));
 
   void _startEngineEval() {
     if (!state.isEngineEnabled) return;
@@ -500,6 +522,7 @@ class PuzzleCtrlState with _$PuzzleCtrlState {
   }
 
   EvaluationContext get evaluationContext => EvaluationContext(
+        variant: Variant.standard,
         initialFen: initialFen,
         contextId: puzzle.puzzle.id,
       );
